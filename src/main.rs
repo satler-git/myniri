@@ -1,0 +1,104 @@
+use anyhow::{Result, anyhow, bail};
+use clap::{Parser, Subcommand, ValueEnum};
+use niri_ipc::{Action, PositionChange, Request, socket::Socket};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Snap (move) floating windows by given direction or run given acition.
+    FloatingSnapOr {
+        /// Direction to move the floating window
+        #[arg(short, long, value_parser)]
+        direction: Direction,
+        /// If the focusing window is not floating, then run this action
+        #[command(subcommand)]
+        or_action: Action,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum Direction {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    match args.command {
+        Command::FloatingSnapOr {
+            direction,
+            or_action,
+        } => {
+            let mut socket = Socket::connect()?;
+
+            let niri_ipc::Response::FocusedWindow(Some(window)) = socket
+                .send(Request::FocusedWindow)?
+                .map_err(|e| anyhow!("{e}"))?
+            else {
+                bail!("failed to receive response")
+            };
+
+            if !window.is_floating {
+                socket
+                    .send(Request::Action(or_action))?
+                    .map_err(|e| anyhow!("{e}"))?;
+            } else {
+                let niri_ipc::Response::FocusedOutput(Some(output)) = socket
+                    .send(Request::FocusedOutput)?
+                    .map_err(|e| anyhow!("{e}"))?
+                else {
+                    bail!("failed to receive response")
+                };
+
+                const LEFT_MARGIN: f64 = 0.;
+                const BOTTOM_MARGIN: f64 = 48.;
+                const TOP_MARGIN: f64 = 0.;
+                const RIGHT_MARGIN: f64 = 0.;
+
+                let (x, y): (Option<f64>, Option<f64>) = match direction {
+                    Direction::Left => (Some(LEFT_MARGIN), None),
+                    Direction::Down => (
+                        None,
+                        Some(
+                            output.logical.map(|l| l.height as f64).unwrap_or_default()
+                                - BOTTOM_MARGIN
+                                - window.layout.tile_size.1,
+                        ),
+                    ),
+                    Direction::Up => (None, Some(TOP_MARGIN)),
+                    Direction::Right => (
+                        Some(
+                            output.logical.map(|l| l.width as f64).unwrap_or_default()
+                                - RIGHT_MARGIN
+                                - window.layout.tile_size.0,
+                        ),
+                        None,
+                    ),
+                };
+
+                socket
+                    .send(Request::Action(Action::MoveFloatingWindow {
+                        id: Some(window.id),
+                        x: x.map(|x| output.logical.map(|l| l.x as f64).unwrap_or_default() + x)
+                            .map(PositionChange::SetFixed)
+                            .unwrap_or(PositionChange::AdjustFixed(0.)),
+                        y: y.map(|y| output.logical.map(|l| l.y as f64).unwrap_or_default() + y)
+                            .map(PositionChange::SetFixed)
+                            .unwrap_or(PositionChange::AdjustFixed(0.)),
+                    }))?
+                    .map_err(|e| anyhow!("{e}"))?;
+            }
+        }
+    }
+
+    Ok(())
+}
