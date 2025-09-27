@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use niri_ipc::{Action, PositionChange, Request, socket::Socket};
+use std::process::Stdio;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -11,7 +12,7 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Snap (move) floating windows by given direction or run given acition.
+    /// Snap (move) floating windows by given direction or run given action.
     FloatingSnapOr {
         /// Direction to move the floating window
         #[arg(short, long, value_parser)]
@@ -20,6 +21,10 @@ enum Command {
         #[command(subcommand)]
         or_action: Action,
     },
+    /// Toggle window follow mode, only when the focusing window is floating.
+    ///
+    /// This subcommand requires nirius
+    ToggleFollowMode,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -96,6 +101,24 @@ fn main() -> Result<()> {
                             .unwrap_or(PositionChange::AdjustFixed(0.)),
                     }))?
                     .map_err(|e| anyhow!("{e}"))?;
+            }
+        }
+        Command::ToggleFollowMode => {
+            let mut socket = Socket::connect()?;
+
+            let niri_ipc::Response::FocusedWindow(Some(window)) = socket
+                .send(Request::FocusedWindow)?
+                .map_err(|e| anyhow!("{e}"))?
+            else {
+                bail!("failed to receive response")
+            };
+
+            if window.is_floating {
+                std::process::Command::new("nirius")
+                    .stdout(Stdio::inherit())
+                    .stdin(Stdio::inherit())
+                    .arg("toggle-follow-mode")
+                    .output()?;
             }
         }
     }
