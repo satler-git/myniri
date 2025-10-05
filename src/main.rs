@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use niri_ipc::{Action, PositionChange, Request, socket::Socket};
 use std::process::Stdio;
@@ -25,6 +25,7 @@ enum Command {
     ///
     /// This subcommand requires nirius
     ToggleFollowMode,
+    ConsumeIntoLeft,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -120,6 +121,44 @@ fn main() -> Result<()> {
                     .arg("toggle-follow-mode")
                     .output()?;
             }
+        }
+        Command::ConsumeIntoLeft => {
+            let mut socket = Socket::connect()?;
+
+            let niri_ipc::Response::FocusedWindow(Some(window)) = socket
+                .send(Request::FocusedWindow)?
+                .map_err(|e| anyhow!("{e}"))?
+            else {
+                bail!("failed to receive response")
+            };
+
+            ensure!(!window.is_floating, "cannot consume a floating window");
+
+            if let Some((in_ws, in_col)) = window.layout.pos_in_scrolling_layout {
+                ensure!(
+                    in_ws != 1,
+                    "cannot consume a window in the first column into left"
+                );
+
+                if in_col != 1 {
+                    for _ in 0..(in_col - 1) {
+                        let _ = socket
+                            .send(Request::Action(Action::MoveWindowUp {}))?
+                            .map_err(|e| anyhow!("{e}"))?;
+                    }
+                }
+            }
+
+            let _ = socket
+                .send(Request::Action(Action::FocusColumnLeft {}))?
+                .map_err(|e| anyhow!("{e}"))?;
+            let _ = socket
+                .send(Request::Action(Action::ConsumeWindowIntoColumn {}))?
+                .map_err(|e| anyhow!("{e}"))?;
+
+            let _ = socket
+                .send(Request::Action(Action::FocusWindow { id: window.id }))?
+                .map_err(|e| anyhow!("{e}"))?;
         }
     }
 
